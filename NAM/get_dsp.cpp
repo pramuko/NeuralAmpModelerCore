@@ -10,9 +10,32 @@
 #include "json.hpp"
 #include "get_dsp.h"
 #include "model_config.h"
+#include "wavenet/model.h"
+#include "lstm.h"
+#include "convnet.h"
+#include "linear.h"
+#include "container.h"
 
 namespace nam
 {
+void ensure_built_in_parsers_registered()
+{
+  static std::once_flag flag;
+  std::call_once(flag, []() {
+    auto& reg = ConfigParserRegistry::instance();
+    if (!reg.has("WaveNet"))
+      reg.registerParser("WaveNet", wavenet::create_config);
+    if (!reg.has("LSTM"))
+      reg.registerParser("LSTM", lstm::create_config);
+    if (!reg.has("ConvNet"))
+      reg.registerParser("ConvNet", convnet::create_config);
+    if (!reg.has("Linear"))
+      reg.registerParser("Linear", linear::create_config);
+    if (!reg.has("SlimmableContainer"))
+      reg.registerParser("SlimmableContainer", container::create_config);
+  });
+}
+
 namespace
 {
 
@@ -153,6 +176,7 @@ std::unique_ptr<DSP> get_dsp(const nlohmann::json& config)
 
 std::unique_ptr<DSP> get_dsp(const std::filesystem::path config_filename, dspData& returnedConfig)
 {
+  ensure_built_in_parsers_registered();
   if (!std::filesystem::exists(config_filename))
     throw std::runtime_error("Config file doesn't exist!\n");
   std::ifstream i(config_filename);
@@ -171,6 +195,7 @@ std::unique_ptr<DSP> get_dsp(const std::filesystem::path config_filename, dspDat
 
 std::unique_ptr<DSP> get_dsp(const nlohmann::json& config, dspData& returnedConfig)
 {
+  ensure_built_in_parsers_registered();
   verify_config_version(config["version"].get<std::string>());
 
   auto architecture = config["architecture"];
@@ -201,6 +226,7 @@ std::unique_ptr<DSP> get_dsp(const nlohmann::json& config, dspData& returnedConf
 std::unique_ptr<ModelConfig> parse_model_config_json(const std::string& architecture, const nlohmann::json& config,
                                                      double sample_rate)
 {
+  ensure_built_in_parsers_registered();
   return ConfigParserRegistry::instance().parse(architecture, config, sample_rate);
 }
 
