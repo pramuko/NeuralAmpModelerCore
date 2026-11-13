@@ -1,18 +1,24 @@
 #include <cassert>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "json.hpp"
 
 #include "NAM/get_dsp.h"
+#include "NAM/registry.h"
 
 namespace test_get_dsp
 {
+static_assert(std::is_base_of_v<std::runtime_error, nam::NamFileValidationError>);
+
 // Config
 const std::string basicConfigStr =
   R"({"version": "0.5.4", "metadata": {"date": {"year": 2024, "month": 10, "day": 9, "hour": 18, "minute": 44, "second": 41}, "loudness": -37.8406867980957, "gain": 0.13508800804658277, "name": "Test LSTM", "modeled_by": "Steve", "gear_type": "amp", "gear_make": "Darkglass Electronics", "gear_model": "Microtubes 900 v2", "tone_type": "clean", "input_level_dbu": 18.3, "output_level_dbu": 12.3, "training": {"settings": {"ignore_checks": false}, "data": {"latency": {"manual": null, "calibration": {"algorithm_version": 1, "delays": [-16], "safety_factor": 1, "recommended": -17, "warnings": {"matches_lookahead": false, "disagreement_too_high": false}}}, "checks": {"version": 3, "passed": true}}, "validation_esr": null}}, "architecture": "LSTM", "config": {"input_size": 1, "hidden_size": 3, "num_layers": 1}, "weights": [-0.21677088737487793, -0.6683622002601624, -0.2560940980911255, -0.3588429093360901, 0.17952610552310944, 0.19445613026618958, -0.01662646047770977, 0.5353694558143616, -0.2536540627479553, -0.5132213234901428, -0.020476307719945908, 0.08592455089092255, -0.6891753673553467, 0.3627359867095947, 0.008421811275184155, 0.3113192617893219, 0.14251480996608734, 0.07989779114723206, -0.18211324512958527, 0.7118963003158569, 0.41084015369415283, -0.6571938395500183, -0.13214066624641418, -0.2698603868484497, 0.49387243390083313, -0.3491725027561188, 0.6353667974472046, -0.5005152225494385, 0.2052856683731079, -0.4301638901233673, -0.15770092606544495, -0.7181791067123413, 0.056290093809366226, -0.49049463868141174, 0.6623441576957703, 0.09029324352741241, 0.34005245566368103, 0.16416560113430023, 0.15520110726356506, -0.4155678153038025, -0.36928507685661316, 0.3211132884025574, -0.6769840121269226, -0.1575538069009781, 0.05268515646457672, -0.4191459119319916, 0.599330484867096, 0.21518059074878693, -4.246325492858887, -3.315647840499878, -4.328850746154785, 4.496089458465576, 5.015639305114746, 3.6492037773132324, 0.14431169629096985, -0.6633821725845337, 0.11673200130462646, -0.1418764889240265, -0.4897872805595398, -0.8689419031143188, -0.06714004278182983, -0.4450395107269287, -0.02142983116209507, -0.15136894583702087, -2.775207996368408, -0.08681213855743408, 0.05702732503414154, 0.670292317867279, 0.31442636251449585, 0.30793967843055725], "sample_rate": 48000})";
@@ -44,6 +50,99 @@ nam::dspData _GetConfig(const std::string& configStr = basicConfigStr)
   returnedConfig.weights = weights;
 
   return returnedConfig;
+}
+
+namespace
+{
+
+class TemporaryNamFile
+{
+public:
+  TemporaryNamFile(const std::string& filename, const std::string& contents)
+  : path(std::filesystem::temp_directory_path() / filename)
+  {
+    std::ofstream output(path);
+    output << contents;
+  }
+
+  ~TemporaryNamFile() { std::filesystem::remove(path); }
+
+  const std::filesystem::path path;
+};
+
+constexpr const char* kConstructorResetArchitecture = "ConstructorResetPrewarmPolicyTest";
+int gConstructorResetConstructCount = 0;
+
+class ConstructorResetDSP : public nam::DSP
+{
+public:
+  explicit ConstructorResetDSP(const double expected_sample_rate)
+  : nam::DSP(1, 1, expected_sample_rate)
+  {
+    gConstructorResetConstructCount++;
+    Reset(expected_sample_rate, 16);
+  }
+
+  void prewarm() override { prewarm_count++; }
+
+  int prewarm_count = 0;
+};
+
+std::unique_ptr<nam::DSP> ConstructorResetFactory(const nlohmann::json& config, std::vector<float>& weights,
+                                                  const double expectedSampleRate)
+{
+  (void)config;
+  (void)weights;
+  return std::make_unique<ConstructorResetDSP>(expectedSampleRate);
+}
+
+static nam::factory::Helper _register_ConstructorResetPrewarmPolicyTest(kConstructorResetArchitecture,
+                                                                        ConstructorResetFactory);
+
+nlohmann::json build_constructor_reset_config()
+{
+  return nlohmann::json{{"version", "0.7.0"},
+                        {"metadata", nlohmann::json::object()},
+                        {"architecture", kConstructorResetArchitecture},
+                        {"config", nlohmann::json::object()},
+                        {"weights", nlohmann::json::array()},
+                        {"sample_rate", 48000}};
+}
+
+} // namespace
+
+void test_empty_nam_file_throws_validation_error()
+{
+  const TemporaryNamFile file("nam_core_empty_file_test.nam", "");
+
+  try
+  {
+    nam::get_dsp(file.path);
+    assert(false);
+  }
+  catch (const nam::NamFileValidationError& error)
+  {
+    const std::string message = error.what();
+    assert(message.find(file.path.string()) != std::string::npos);
+    assert(message.find("parse") != std::string::npos);
+  }
+}
+
+void test_malformed_nam_file_throws_validation_error()
+{
+  const TemporaryNamFile file("nam_core_malformed_file_test.nam", R"({"version":)");
+
+  try
+  {
+    nam::get_dsp(file.path);
+    assert(false);
+  }
+  catch (const nam::NamFileValidationError& error)
+  {
+    const std::string message = error.what();
+    assert(message.find(file.path.string()) != std::string::npos);
+    assert(message.find("parse") != std::string::npos);
+  }
 }
 
 void test_gets_input_level()
@@ -143,7 +242,7 @@ void test_load_and_process_nam_files()
   // Paths are relative to root directory where tests run (./build/tools/run_tests)
   const std::vector<std::string> nam_files = {"example_models/wavenet.nam", "example_models/lstm.nam",
                                               "example_models/wavenet_condition_dsp.nam",
-                                              "example_models/wavenet_a2_max.nam"};
+                                              "example_models/wavenet_a2_feature_test.nam"};
 
   const int num_buffers = 3;
   const int buffer_size = 64;
@@ -272,5 +371,81 @@ void test_register_custom_version_support_checker()
   assert(nam::is_version_supported("DEMO::1.0.0") == nam::Supported::YES);
   assert(nam::is_version_supported("DEMO::1.0.3") == nam::Supported::PARTIAL);
   assert(nam::is_version_supported("DEMO::2.0.0") == nam::Supported::NO);
+}
+
+void test_get_dsp_default_allows_constructor_reset_prewarm()
+{
+  gConstructorResetConstructCount = 0;
+
+  auto dsp = nam::get_dsp(build_constructor_reset_config());
+  auto* typed = dynamic_cast<ConstructorResetDSP*>(dsp.get());
+
+  assert(typed != nullptr);
+  assert(gConstructorResetConstructCount == 1);
+  assert(typed->prewarm_count == 1);
+  assert(typed->GetPrewarmOnReset());
+}
+
+void test_get_dsp_default_inherits_scoped_prewarm_default()
+{
+  gConstructorResetConstructCount = 0;
+
+  nam::ScopedPrewarmOnResetDefault scoped_default(false);
+  auto dsp = nam::get_dsp(build_constructor_reset_config());
+  auto* typed = dynamic_cast<ConstructorResetDSP*>(dsp.get());
+
+  assert(typed != nullptr);
+  assert(gConstructorResetConstructCount == 1);
+  assert(typed->prewarm_count == 0);
+  assert(!typed->GetPrewarmOnReset());
+}
+
+void test_get_dsp_prewarm_option_suppresses_constructor_reset_prewarm()
+{
+  gConstructorResetConstructCount = 0;
+
+  nam::DspLoadOptions options;
+  options.prewarm = false;
+  auto dsp = nam::get_dsp(build_constructor_reset_config(), options);
+  auto* typed = dynamic_cast<ConstructorResetDSP*>(dsp.get());
+
+  assert(typed != nullptr);
+  assert(gConstructorResetConstructCount == 1);
+  assert(typed->prewarm_count == 0);
+  assert(typed->GetPrewarmOnReset());
+
+  typed->Reset(48000.0, 16);
+  assert(typed->prewarm_count == 1);
+}
+
+void test_get_dsp_prewarm_option_forces_constructor_reset_prewarm()
+{
+  gConstructorResetConstructCount = 0;
+
+  nam::ScopedPrewarmOnResetDefault scoped_default(false);
+  nam::DspLoadOptions options;
+  options.prewarm = true;
+  auto dsp = nam::get_dsp(build_constructor_reset_config(), options);
+  auto* typed = dynamic_cast<ConstructorResetDSP*>(dsp.get());
+
+  assert(typed != nullptr);
+  assert(gConstructorResetConstructCount == 1);
+  assert(typed->prewarm_count == 1);
+  assert(!typed->GetPrewarmOnReset());
+
+  typed->Reset(48000.0, 16);
+  assert(typed->prewarm_count == 1);
+}
+
+void test_get_dsp_with_returned_config_constructs_once()
+{
+  gConstructorResetConstructCount = 0;
+
+  nam::dspData returned_config;
+  auto dsp = nam::get_dsp(build_constructor_reset_config(), returned_config);
+
+  assert(dsp != nullptr);
+  assert(gConstructorResetConstructCount == 1);
+  assert(returned_config.architecture == kConstructorResetArchitecture);
 }
 }; // namespace test_get_dsp

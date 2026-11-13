@@ -1,7 +1,19 @@
 cmake_minimum_required(VERSION 3.10)
 
-# Make sure this matches ./NAM/version.h!
-project(NAM VERSION 0.4.0)
+file(READ "${CMAKE_CURRENT_LIST_DIR}/NAM/version.h" _nam_version_header)
+foreach(_component MAJOR MINOR PATCH)
+	string(REGEX MATCH
+		"#define[ \t]+NEURAL_AMP_MODELER_DSP_VERSION_${_component}[ \t]+([0-9]+)"
+		_nam_version_match "${_nam_version_header}"
+	)
+	if(NOT _nam_version_match)
+		message(FATAL_ERROR "Could not parse NEURAL_AMP_MODELER_DSP_VERSION_${_component} from NAM/version.h")
+	endif()
+	set(_nam_version_${_component} "${CMAKE_MATCH_1}")
+endforeach()
+
+set(_nam_project_version "${_nam_version_MAJOR}.${_nam_version_MINOR}.${_nam_version_PATCH}")
+project(NAM VERSION "${_nam_project_version}")
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
@@ -39,7 +51,7 @@ endif()
 set(NAM_DEPS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies")
 include_directories(SYSTEM "${NAM_DEPS_PATH}/eigen")
 
-# Build the specialized A2 fast-path WaveNet (A2 standard + A2 nano). When ON,
+# Build the specialized A2 fast-path WaveNet (A2-Full + A2-Lite). When ON,
 # models whose config matches the A2 shape signature are routed to a hand-optimized
 # WaveNet implementation instead of the generic one. When OFF, all models go
 # through the generic path.

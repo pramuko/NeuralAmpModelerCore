@@ -140,24 +140,24 @@ void process_and_verify(nam::DSP* dsp, int num_buffers, int buffer_size)
 
 void test_container_loads_from_json()
 {
-  auto j =
-    build_container_json("example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_max.nam");
+  auto j = build_container_json(
+    "example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_feature_test.nam");
   auto dsp = nam::get_dsp(j);
   assert(dsp != nullptr);
 }
 
 void test_container_processes_audio()
 {
-  auto j =
-    build_container_json("example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_max.nam");
+  auto j = build_container_json(
+    "example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_feature_test.nam");
   auto dsp = nam::get_dsp(j);
   process_and_verify(dsp.get(), 3, 64);
 }
 
 void test_container_slimmable_selects_submodel()
 {
-  auto j =
-    build_container_json("example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_max.nam");
+  auto j = build_container_json(
+    "example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_feature_test.nam");
   auto dsp = nam::get_dsp(j);
   const double sample_rate = 48000.0;
   const int buffer_size = 64;
@@ -198,8 +198,8 @@ void test_container_slimmable_selects_submodel()
 
 void test_container_boundary_values()
 {
-  auto j =
-    build_container_json("example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_max.nam");
+  auto j = build_container_json(
+    "example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_feature_test.nam");
   auto dsp = nam::get_dsp(j);
   const double sample_rate = 48000.0;
   const int buffer_size = 16;
@@ -238,6 +238,20 @@ void test_container_boundary_values()
   dsp->process(&in_ptr, &out_ptr, buffer_size);
   for (int i = 0; i < buffer_size; i++)
     assert(std::isfinite(output[i]));
+}
+
+void test_container_slimmable_breakpoints()
+{
+  CountingDSP* small = nullptr;
+  CountingDSP* large = nullptr;
+  auto dsp = build_counting_container(small, large);
+
+  auto* slimmable = dynamic_cast<nam::SlimmableModel*>(dsp.get());
+  assert(slimmable != nullptr);
+
+  const auto breakpoints = slimmable->GetSlimmableSizeBreakpoints();
+  assert(breakpoints.size() == 1);
+  assert(breakpoints[0] == 0.5);
 }
 
 void test_container_empty_submodels_throws()
@@ -366,8 +380,8 @@ void test_container_load_from_file()
 
 void test_container_default_is_max_size()
 {
-  auto j =
-    build_container_json("example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_max.nam");
+  auto j = build_container_json(
+    "example_models/lstm.nam", "example_models/wavenet.nam", "example_models/wavenet_a2_feature_test.nam");
   auto dsp = nam::get_dsp(j);
   const double sample_rate = 48000.0;
   const int buffer_size = 64;
@@ -380,7 +394,7 @@ void test_container_default_is_max_size()
   NAM_SAMPLE* out_ptr;
 
   // Ensure both predictions start from identical model state.
-  dsp->ResetAndPrewarm(sample_rate, buffer_size);
+  dsp->Reset(sample_rate, buffer_size);
   // Process with default (should be max size)
   out_ptr = out_default.data();
   dsp->process(&in_ptr, &out_ptr, buffer_size);
@@ -389,7 +403,7 @@ void test_container_default_is_max_size()
   auto* slimmable = dynamic_cast<nam::SlimmableModel*>(dsp.get());
   assert(slimmable != nullptr);
   slimmable->SetSlimmableSize(1.0);
-  dsp->ResetAndPrewarm(sample_rate, buffer_size);
+  dsp->Reset(sample_rate, buffer_size);
   out_ptr = out_max.data();
   dsp->process(&in_ptr, &out_ptr, buffer_size);
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <iterator>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <Eigen/Dense>
 
 #include "activations.h"
+#include "compiler.h"
 #include "json.hpp"
 #include "model_config.h"
 
@@ -24,12 +26,8 @@
   #define NAM_DEFAULT_MAX_BUFFER_SIZE 4096
 #endif
 
-/// \brief Use a sample rate of -1 if we don't know what the model expects to be run at
+/// \brief Use a sample rate of -1 if the model's training sample rate is unknown
 #define NAM_UNKNOWN_EXPECTED_SAMPLE_RATE -1.0
-
-#if defined(_MSC_VER) && !defined(__llvm__)
-  #define __restrict__ __restrict
-#endif
 
 namespace nam
 {
@@ -38,6 +36,25 @@ namespace wavenet
 /// Forward declaration to allow WaveNet to access protected members of DSP
 class WaveNet;
 } // namespace wavenet
+
+/// \brief Temporarily change the thread-local prewarm-on-reset default for newly constructed DSP objects
+///
+/// Existing DSP objects are not affected. DSP instances constructed while this object is alive on the current thread
+/// copy the scoped default into their instance-level prewarm-on-reset setting.
+class ScopedPrewarmOnResetDefault
+{
+public:
+  explicit ScopedPrewarmOnResetDefault(const bool prewarmOnReset);
+  ~ScopedPrewarmOnResetDefault();
+
+  ScopedPrewarmOnResetDefault(const ScopedPrewarmOnResetDefault&) = delete;
+  ScopedPrewarmOnResetDefault& operator=(const ScopedPrewarmOnResetDefault&) = delete;
+
+  bool PreviousPrewarmOnReset() const { return mPreviousPrewarmOnReset; }
+
+private:
+  bool mPreviousPrewarmOnReset;
+};
 
 /// \brief Base class for all DSP models
 ///
@@ -57,7 +74,7 @@ public:
   ///
   /// \param in_channels Number of input channels
   /// \param out_channels Number of output channels
-  /// \param expected_sample_rate Expected sample rate in Hz (-1.0 if unknown)
+  /// \param expected_sample_rate Training sample rate in Hz (-1.0 if unknown)
   DSP(const int in_channels, const int out_channels, const double expected_sample_rate);
 
   /// \brief Virtual destructor
@@ -78,9 +95,18 @@ public:
   /// \param output Output audio buffers. Same structure as input.
   /// \param num_frames Number of frames to process
   virtual void process(NAM_SAMPLE** input, NAM_SAMPLE** output, const int num_frames);
-  /// \brief Get the expected sample rate
-  /// \return Expected sample rate in Hz (-1.0 if unknown)
+  /// \brief Get the sample rate at which the model was trained
+  ///
+  /// This remains unchanged by Reset(). Models that support arbitrary sample rates
+  /// can also run at other rates; see SupportsArbitrarySampleRate().
+  /// \return Training sample rate in Hz (-1.0 if unknown)
   double GetExpectedSampleRate() const { return mExpectedSampleRate; };
+
+  /// \brief Whether this model can adapt to arbitrary processing sample rates
+  ///
+  /// Call Reset() with the desired processing rate before processing audio.
+  /// A known training sample rate is needed to perform rate conversion.
+  virtual bool SupportsArbitrarySampleRate() { return false; }
 
   /// \brief Get the number of input channels
   /// \return Number of input channels
@@ -131,22 +157,37 @@ public:
   /// \return true if output level is known, false otherwise
   bool HasOutputLevel();
 
+  /// \brief Get how many samples should be processed for the model to be considered "warmed up"
+  ///
+  /// Override this in subclasses to specify prewarm requirements.
+  /// \return Number of samples needed for prewarm
+  virtual int GetPrewarmSamples() { return 0; };
+
   /// \brief General function for resetting the DSP unit
   ///
-  /// This doesn't call prewarm(). If you want to do that, then you might want to use ResetAndPrewarm().
-  /// See https://github.com/sdatkinson/NeuralAmpModelerCore/issues/96 for the reasoning.
+  /// By default, this calls prewarm() after updating the sample rate and buffer size. Use SetPrewarmOnReset() to
+  /// disable or re-enable that behavior for a DSP instance.
+  /// Models supporting arbitrary sample rates adapt here. Reset() may allocate
+  /// and must be called outside real-time audio processing.
   /// \param sampleRate Current sample rate
   /// \param maxBufferSize Maximum buffer size to process
   virtual void Reset(const double sampleRate, const int maxBufferSize);
 
   /// \brief Reset the DSP unit, then prewarm
+  ///
+  /// Deprecated: ResetAndPrewarm() will be removed in v0.6.0. Reset() prewarms by default; use
+  /// SetPrewarmOnReset() to control whether Reset() calls prewarm().
   /// \param sampleRate Current sample rate
   /// \param maxBufferSize Maximum buffer size to process
-  void ResetAndPrewarm(const double sampleRate, const int maxBufferSize)
-  {
-    Reset(sampleRate, maxBufferSize);
-    prewarm();
-  }
+  void ResetAndPrewarm(const double sampleRate, const int maxBufferSize);
+
+  /// \brief Control whether Reset() calls prewarm()
+  /// \param prewarmOnReset true for Reset() to call prewarm(), false to skip prewarm()
+  virtual void SetPrewarmOnReset(const bool prewarmOnReset);
+
+  /// \brief Check whether Reset() calls prewarm()
+  /// \return true if Reset() calls prewarm()
+  bool GetPrewarmOnReset() const;
 
   /// \brief Set the input level
   /// \param inputLevel Input level in dBu
@@ -164,33 +205,28 @@ public:
   /// \param outputLevel Output level in dBu
   void SetOutputLevel(const double outputLevel);
 
+  /// \brief Get the maximum buffer size
+  /// \return Maximum buffer size
+  int GetMaxBufferSize() const { return mMaxBufferSize; };
+
 protected:
   friend class wavenet::WaveNet; // Allow WaveNet to access protected members. Used in condition DSP.
 
   bool mHasLoudness = false;
   // How loud is the model? In dB
   double mLoudness = 0.0;
-  // What sample rate does the model expect?
+  // The sample rate at which the model was trained.
   double mExpectedSampleRate;
   // Have we been told what the external sample rate is? If so, what is it?
   bool mHaveExternalSampleRate = false;
   double mExternalSampleRate = -1.0;
   // The largest buffer I expect to be told to process:
   int mMaxBufferSize = 0;
-
-  /// \brief Get how many samples should be processed for the model to be considered "warmed up"
-  ///
-  /// Override this in subclasses to specify prewarm requirements.
-  /// \return Number of samples needed for prewarm
-  virtual int PrewarmSamples() { return 0; };
+  std::atomic<bool> mPrewarmOnReset;
 
   /// \brief Set the maximum buffer size
   /// \param maxBufferSize Maximum number of frames to process in a single call
   virtual void SetMaxBufferSize(const int maxBufferSize);
-
-  /// \brief Get the maximum buffer size
-  /// \return Maximum buffer size
-  int GetMaxBufferSize() const { return mMaxBufferSize; };
 
 private:
   const int mInChannels;
@@ -218,7 +254,7 @@ public:
   /// \param in_channels Number of input channels
   /// \param out_channels Number of output channels
   /// \param receptive_field Size of the receptive field (buffer size needed)
-  /// \param expected_sample_rate Expected sample rate in Hz (-1.0 if unknown)
+  /// \param expected_sample_rate Training sample rate in Hz (-1.0 if unknown)
   Buffer(const int in_channels, const int out_channels, const int receptive_field,
          const double expected_sample_rate = -1.0);
 
@@ -323,12 +359,12 @@ private:
 struct dspData
 {
   std::string version; ///< Data version. Follows conventions established in trainer code.
-  std::string architecture; ///< High-level architecture. Supported: "ConvNet", "LSTM", "Linear", "WaveNet"
+  std::string architecture; ///< High-level architecture, e.g. "ConvNet", "LSTM", "Linear", "WaveNet", "Sequential"
   nlohmann::json config; ///< Model configuration JSON
   nlohmann::json metadata; ///< Model metadata JSON
   std::vector<float> weights; ///< Model weights
-  double expected_sample_rate; ///< Expected sample rate in Hz. Most NAM models implicitly assume data at some sample
-                               ///< rate. Use -1.0 for "I don't know".
+  double expected_sample_rate; ///< Training sample rate in Hz (-1.0 if unknown). Models advertising
+                               ///< SupportsArbitrarySampleRate() may also run at other rates.
 };
 
 /// \brief Verify that the config version is supported by this plugin version

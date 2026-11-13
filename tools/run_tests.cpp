@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include "test/test_activations.cpp"
+#include "test/test_activations_realtime_safe.cpp"
 #include "test/test_conv1d.cpp"
 #include "test/test_conv_1x1.cpp"
 #include "test/test_convnet.cpp"
@@ -11,6 +12,7 @@
 #include "test/test_film_realtime_safe.cpp"
 #include "test/test_fast_lut.cpp"
 #include "test/test_get_dsp.cpp"
+#include "test/test_get_dsp_wav.cpp"
 #include "test/test_ring_buffer.cpp"
 #include "test/test_wavenet/test_layer.cpp"
 #include "test/test_wavenet/test_layer_array.cpp"
@@ -28,10 +30,13 @@
 #include "test/test_input_buffer_verification.cpp"
 #include "test/test_linear.cpp"
 #include "test/test_lstm.cpp"
+#include "test/test_lstm_realtime_safe.cpp"
+#include "test/test_nam_file.cpp"
 #include "test/test_wavenet_configurable_gating.cpp"
 #include "test/test_noncontiguous_blocks.cpp"
 #include "test/test_extensible.cpp"
 #include "test/test_container.cpp"
+#include "test/test_sequential.cpp"
 #include "test/test_render_slim.cpp"
 #include "test/test_slimmable_wavenet.cpp"
 #include "test/test_a2_fast.cpp"
@@ -39,6 +44,8 @@
 int main()
 {
   std::cout << "Running tests..." << std::endl;
+  test_get_dsp_wav::test_formats_and_configuration();
+  test_get_dsp_wav::test_invalid_files();
   // TODO Automatically loop, catch exceptions, log results
 
   test_activations::TestFastTanh::test_core_function();
@@ -62,6 +69,9 @@ int main()
   test_activations::TestPReLU::test_wrong_size_array();
   test_activations::TestPReLU::test_valid_array_size();
 
+  test_activations_realtime_safe::test_prelu_apply_matrix_realtime_safe();
+  test_activations_realtime_safe::test_prelu_apply_pointer_realtime_safe();
+
   // Typed ActivationConfig tests
   test_activations::TestTypedActivationConfig::test_simple_config();
   test_activations::TestTypedActivationConfig::test_all_simple_types();
@@ -84,10 +94,25 @@ int main()
   test_dsp::test_has_output_level();
   test_dsp::test_set_input_level();
   test_dsp::test_set_output_level();
+  test_dsp::test_reset_prewarm_on_reset_default();
+  test_dsp::test_set_prewarm_on_reset();
+  test_dsp::test_reset_and_prewarm_forces_prewarm();
+  test_dsp::test_reset_and_prewarm_restores_prewarm_on_throw();
+  test_dsp::test_scoped_prewarm_on_reset_default();
 
+  test_linear::test_channel_mappings();
+  test_linear::test_channel_validation();
+  test_linear::test_channel_mapping_in_place();
+  test_linear::test_arbitrary_sample_rate_capability();
+  test_linear::test_sample_rate_known_values();
+  test_linear::test_sample_rate_fractional_and_fft();
+  test_linear::test_sample_rate_short_unknown_and_invalid();
+  test_linear::test_sample_rate_multichannel_realtime_safe();
   test_linear::test_direct_known_values();
   test_linear::test_fft_matches_direct_irregular_chunks();
   test_linear::test_auto_selection();
+  test_linear::test_fft_dispatch_table();
+  test_linear::test_fft_impulse_response_across_dispatch_sizes();
   test_linear::test_parse_implementation();
   test_linear::test_direct_process_realtime_safe();
   test_linear::test_fft_process_realtime_safe();
@@ -124,6 +149,8 @@ int main()
   test_conv1d::test_process_grouped_dilation();
   test_conv1d::test_process_grouped_channel_isolation();
   test_conv1d::test_get_num_weights_grouped();
+  test_conv1d::test_process_8x4_kernel6_matches_reference();
+  test_conv1d::test_process_1x4_kernel16_matches_reference();
 
   test_conv_1x1::test_construct();
   test_conv_1x1::test_construct_with_groups();
@@ -139,6 +166,9 @@ int main()
   test_conv_1x1::test_process_underscore_grouped();
   test_conv_1x1::test_set_max_buffer_size();
   test_conv_1x1::test_process_multiple_calls();
+  test_conv_1x1::test_process_underscore_4x6_matches_reference();
+  test_conv_1x1::test_process_underscore_8x6_matches_reference();
+  test_conv_1x1::test_process_underscore_4x4_with_bias_matches_reference();
 
   test_film::test_set_max_buffer_size();
   test_film::test_process_bias_only();
@@ -177,6 +207,7 @@ int main()
   test_wavenet::test_output_head::test_wavenet_with_two_layer_post_stack_head_applies_activation_per_layer_input();
   test_wavenet::test_layer_head_config::test_legacy_head_size_and_head_bias_implies_kernel_one();
   test_wavenet::test_layer_head_config::test_nested_head_with_kernel_size_three();
+  test_wavenet::test_layer_head_config::test_nested_head_with_dilation_three();
   test_wavenet::test_full::test_wavenet_multiple_arrays();
   test_wavenet::test_full::test_wavenet_zero_input();
   test_wavenet::test_full::test_wavenet_different_buffer_sizes();
@@ -190,6 +221,7 @@ int main()
   test_wavenet::test_layer1x1::test_layer1x1_inactive();
   test_wavenet::test_layer1x1::test_layer1x1_inactive_bottleneck_mismatch();
   test_wavenet::test_layer1x1::test_layer1x1_post_film_active();
+  test_wavenet::test_layer1x1::test_layer1x1_post_film_is_applied_for_every_gating_mode();
   test_wavenet::test_layer1x1::test_layer1x1_post_film_inactive_with_layer1x1_inactive();
   test_wavenet::test_layer1x1::test_layer1x1_gated();
   test_wavenet::test_layer1x1::test_layer1x1_groups();
@@ -233,6 +265,13 @@ int main()
   test_lstm::test_lstm_different_input_size();
   test_lstm::test_lstm_state_evolution();
   test_lstm::test_lstm_no_layers();
+
+  // LSTM real-time safety tests (issue #218)
+  test_lstm_realtime_safe::test_lstm_process_single_layer_realtime_safe();
+  test_lstm_realtime_safe::test_lstm_process_multi_layer_realtime_safe();
+  test_lstm_realtime_safe::test_lstm_process_multichannel_realtime_safe();
+  test_lstm_realtime_safe::test_lstm_process_large_hidden_realtime_safe();
+  test_lstm_realtime_safe::test_lstm_process_consecutive_calls_realtime_safe();
 
   // Gating activations tests
   test_gating_activations::TestGatingActivation::test_basic_functionality();
@@ -278,6 +317,8 @@ int main()
 
   test_get_dsp::test_gets_input_level();
   test_get_dsp::test_gets_output_level();
+  test_get_dsp::test_empty_nam_file_throws_validation_error();
+  test_get_dsp::test_malformed_nam_file_throws_validation_error();
   test_get_dsp::test_null_input_level();
   test_get_dsp::test_null_output_level();
   test_get_dsp::test_version_patch_one_beyond_supported();
@@ -285,6 +326,15 @@ int main()
   test_get_dsp::test_version_too_early();
   test_get_dsp::test_is_version_supported_core_behavior();
   test_get_dsp::test_register_custom_version_support_checker();
+  test_get_dsp::test_get_dsp_default_allows_constructor_reset_prewarm();
+  test_get_dsp::test_get_dsp_default_inherits_scoped_prewarm_default();
+  test_get_dsp::test_get_dsp_prewarm_option_suppresses_constructor_reset_prewarm();
+  test_get_dsp::test_get_dsp_prewarm_option_forces_constructor_reset_prewarm();
+  test_get_dsp::test_get_dsp_with_returned_config_constructs_once();
+
+  test_nam_file::test_accepts_minimum_valid_file();
+  test_nam_file::test_rejects_non_object_json();
+  test_nam_file::test_rejects_missing_required_keys();
 
   // Finally, some end-to-end tests.
   test_get_dsp::test_load_and_process_nam_files();
@@ -297,6 +347,7 @@ int main()
   test_container::test_container_processes_audio();
   test_container::test_container_slimmable_selects_submodel();
   test_container::test_container_boundary_values();
+  test_container::test_container_slimmable_breakpoints();
   test_container::test_container_empty_submodels_throws();
   test_container::test_container_last_max_value_must_cover_one();
   test_container::test_container_unsorted_submodels_throws();
@@ -305,6 +356,21 @@ int main()
   test_container::test_container_default_is_max_size();
   test_container::test_container_reset_only_resets_active_submodel();
   test_container::test_container_switch_resets_before_activation();
+
+  // Sequential tests
+  test_sequential::test_sequential_loads_canonical_container_envelope();
+  test_sequential::test_sequential_loads_from_file_path();
+  test_sequential::test_sequential_process_matches_manual_series();
+  test_sequential::test_sequential_process_is_realtime_safe_after_warmup();
+  test_sequential::test_sequential_rejects_blocks_larger_than_reset_maximum();
+  test_sequential::test_sequential_rejects_lowercase_architecture();
+  test_sequential::test_sequential_accepts_nested_sequential_child();
+  test_sequential::test_sequential_rejects_empty_models();
+  test_sequential::test_sequential_rejects_nonempty_top_level_weights();
+  test_sequential::test_sequential_rejects_legacy_bare_child_configs();
+  test_sequential::test_sequential_rejects_sample_rate_mismatch();
+  test_sequential::test_sequential_rejects_top_level_sample_rate_mismatch();
+  test_sequential::test_sequential_rejects_channel_mismatch();
 
   // Render --slim tests
   test_render_slim::test_slim_changes_output();
@@ -320,6 +386,7 @@ int main()
   test_slimmable_wavenet::test_boundary_values();
   test_slimmable_wavenet::test_default_is_max_size();
   test_slimmable_wavenet::test_ratio_mapping();
+  test_slimmable_wavenet::test_slimmable_breakpoints();
   test_slimmable_wavenet::test_from_json();
   test_slimmable_wavenet::test_wavenet_without_slimmable_loads_as_regular();
   test_slimmable_wavenet::test_unsupported_method_throws();
@@ -327,17 +394,23 @@ int main()
 
 #if defined(NAM_ENABLE_A2_FAST)
   // A2 fast-path WaveNet: detector coverage + numerical match against generic.
-  test_a2_fast::test_detector_matches_nano();
-  test_a2_fast::test_detector_matches_standard();
+  test_a2_fast::test_detector_matches_lite();
+  test_a2_fast::test_detector_matches_full();
   test_a2_fast::test_detector_accepts_nonstandard_head_scale();
   test_a2_fast::test_detector_rejects_wrong_channels();
   test_a2_fast::test_detector_rejects_wrong_kernel_sizes();
   test_a2_fast::test_detector_rejects_wrong_activation();
   test_a2_fast::test_detector_rejects_gating();
-  test_a2_fast::test_matches_generic_nano();
-  test_a2_fast::test_matches_generic_standard();
-  test_a2_fast::test_process_realtime_safe_nano();
-  test_a2_fast::test_process_realtime_safe_standard();
+  test_a2_fast::test_detector_rejects_condition_dsp();
+  test_a2_fast::test_detector_rejects_legacy_gated();
+  test_a2_fast::test_matches_generic_lite();
+  test_a2_fast::test_matches_generic_full();
+  test_a2_fast::test_prewarm_matches_generic_lite();
+  test_a2_fast::test_prewarm_matches_generic_full();
+  test_a2_fast::test_cached_prewarm_lite();
+  test_a2_fast::test_cached_prewarm_full();
+  test_a2_fast::test_process_realtime_safe_lite();
+  test_a2_fast::test_process_realtime_safe_full();
 #endif
 
   std::cout << "Success!" << std::endl;
